@@ -127,3 +127,6 @@ Outputs:
     CloudFrontAuthFunctionVersion:
       Description: Lambda@Edge CloudFront Auth Function ARN with Version
       Value: !Ref CloudFrontAuthFunction.Version
+    CloudFrontDomain:
+      Description: "CloudFront Domain URL"
+      Value: !GetAtt CFDistribution.DomainName

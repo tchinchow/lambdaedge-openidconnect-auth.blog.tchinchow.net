@@ -23,54 +23,18 @@ Automate the deployment of CloudFront and Lambda@edge Function
 
   Assumption : Secret Manager has the base64 encoded Okta configuration file (sample of the original configuration file is shown below with the dummy values, please replace the dummy values after setting up the values in Okta)
 
-  ```json
-{
-	"AUTH_REQUEST": {
-		"client_id": "${CLIENT_ID_FROM_OKTA}",
-		"response_type": "code",
-		"scope": "openid email",
-		"redirect_uri": "https://${CLOUDFRONT_DIST_URL}/_callback"
-	},
-	"TOKEN_REQUEST": {
-		"client_id": "${CLIENT_ID_FROM_OKTA}",
-		"redirect_uri": "https://${CLOUDFRONT_DIST_URL}/_callback",
-		"grant_type": "authorization_code",
-		"client_secret": "${CLIENT_SECRET_FROM_OKTA}"
-	},
-	"DISTRIBUTION": "amazon-oai",
-	"AUTHN": "OKTA",
-	"PRIVATE_KEY": "${PRIVATE_KEY_GOES_HERE}",
-	"PUBLIC_KEY": "${PUBLIC_KEY_GOES_HERE}",
-	"DISCOVERY_DOCUMENT": "https://${OKTA_DOMAIN_NAME}/.well-known/openid-configuration",
-	"SESSION_DURATION": 30,
-	"BASE_URL": "https://${OKTA_DOMAIN_NAME}/",
-	"CALLBACK_PATH": "/_callback",
-	"AUTHZ": "OKTA"
-}
-```
+  1. git clone https://github.com/aws-samples/lambdaedge-openidconnect-samples
+  2. cd lambdaedge-openidconnect-samples
+  3. Pass the below values in prereq.sh script
+  	- DEPLOY_BUCKET (this is the S3 Bucket where to which SAM deploys the Lambda@Edge code),
+	- STATIC_WEBSITE_BUCKET (new S3 bucket for content that will serve as the origin for CloudFront)- YOUR_LOG_BUCKET_NAME (S3 bucket for your Logs)
+	- YOUR_SECRETS_MANAGER_KEY_NAME (Secret managerKey name containing OpenID Connect configuration)
+	- CLIENT_ID_FROM_IDP (IDP Provider Client ID for e.g. okta)
+	- IDP_DOMAIN_NAME (HostName for the Website)
+  ```
+  ./prereq.sh DEPLOY_BUCKET STATIC_WEBSITE_BUCKET YOUR_LOG_BUCKET_NAME YOUR_SECRETS_MANAGER_KEY_NAME CLIENT_ID_FROM_IDP IDP_DOMAIN_NAME
 
-  Prerequisite: Create a file in `src/js` called okta-key.txt which is the key for the secret manager path pointing to the base 64 encoded file as mentioned above.
-
-#### 2. Steps to set up the Distribution
-
-  a. Build lambda function, and prepare them for subsequent steps in the workflow
-  
-      Command: sam build -b ./build -s . -t template.yaml -u
-
-  b. Packages the above LambdaFunction. It creates a ZIP file of the code and dependencies, and uploads it to Amazon S3 (please create the S3 bucket and mention the bucket name in the command below). It then returns a copy of AWS SAM template, replacing references to local artifacts with the Amazon S3 location where the command uploaded the artifacts
-
-      Command: sam package \
-                --template-file build/template.yaml \
-                --s3-bucket ${YOUR_S3_SAM_BUCKET} \
-                --output-template-file build/packaged.yaml
-
-  c. Deploy Lambda functions through AWS CloudFormation from the S3 bucket created above. AWS SAM CLI now creates and manages this Amazon S3 bucket for you.
-
-      Command:  sam deploy \
-                --template-file build/packaged.yaml \
-                --stack-name oidc-auth \
-                --capabilities CAPABILITY_NAMED_IAM \
-				--parameter-overrides BucketName=${YOUR_NEW_STATIC_SITE_BUCKET_NAME} LogBucketName=${YOUR_LOG_BUCKET_NAME} SecretKeyName=${YOUR_SECRETS_MANAGER_KEY_NAME}
+  ```
 
 ## Security
 
