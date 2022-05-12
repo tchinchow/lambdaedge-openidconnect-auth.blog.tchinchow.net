@@ -84,8 +84,7 @@ Resources:
             - Origin
             Cookies:
               Forward: none
-          ViewerProtocolPolicy:
-            "allow-all"
+          ViewerProtocolPolicy: 'redirect-to-https'
   CloudFrontAuthFunction:
       Type: AWS::Serverless::Function
       Properties:
