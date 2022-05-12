@@ -25,6 +25,11 @@ Resources:
   LoggingBucket:
     Type: AWS::S3::Bucket
     Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'true'
+        BlockPublicPolicy: 'true'
+        IgnorePublicAcls: 'true'
+        RestrictPublicBuckets: 'true'
       AccessControl: LogDeliveryWrite
       BucketName: !Ref LogBucketName
       BucketEncryption:
@@ -32,16 +37,21 @@ Resources:
         - ServerSideEncryptionByDefault:
             SSEAlgorithm: AES256
   OriginBucket:
-      Type: AWS::S3::Bucket
-      Properties:
-        BucketName: !Ref OriginBucketName
-        BucketEncryption:
-          ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-        LoggingConfiguration:
-          DestinationBucketName: !Ref LoggingBucket
-          LogFilePrefix: 'accessLogs/'
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref OriginBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'true'
+        BlockPublicPolicy: 'true'
+        IgnorePublicAcls: 'true'
+        RestrictPublicBuckets: 'true'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: 'accessLogs/'
   ReadPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
