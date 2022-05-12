@@ -3,136 +3,131 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: SAM configuration for cloudfront-auth function
-Parameters: 
-    BucketName:
-        Type: String
-        Description: The name of the Static Content S3 Bucket to Create
-    LogBucketName:
-          Type: String
-          Description: The name of the Log Content S3 Bucket already existing
-    SecretKeyName:
-        Type: String
-        Description: The name of the Secret in Secrets manager for the OIDC configuaration (e.g. okta-configuration-v4cw9Z)
-    MinimumTLSVersion:
-        Type: String
-        Description: The minimum version to use for CloudFront TLS
-        Default: TLSv1.2_2018
+Parameters:
+  BucketName:
+    Type: String
+    Description: The name of the Static Content S3 Bucket to Create
+  LogBucketName:
+    Type: String
+    Description: The name of the Log Content S3 Bucket already existing
+  SecretKeyName:
+    Type: String
+    Description: The name of the Secret in Secrets manager for the OIDC configuaration (e.g. okta-configuration-v4cw9Z)
+  MinimumTLSVersion:
+    Type: String
+    Description: The minimum version to use for CloudFront TLS
+    Default: TLSv1.2_2018
 Resources:
-    LoggingBucket:
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName: !Ref LogBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+  S3Bucket:
       Type: AWS::S3::Bucket
       Properties:
-        AccessControl: LogDeliveryWrite
-        BucketName: !Ref LogBucketName
+        BucketName: !Ref BucketName
         BucketEncryption:
-              ServerSideEncryptionConfiguration: 
-                -
-                  ServerSideEncryptionByDefault:
-                    SSEAlgorithm: AES256
-    S3Bucket:
-        Type: AWS::S3::Bucket
-        Properties:
-            BucketName: !Ref BucketName
-            BucketEncryption:
-              ServerSideEncryptionConfiguration: 
-                -
-                  ServerSideEncryptionByDefault:
-                    SSEAlgorithm: AES256
-            LoggingConfiguration:
-              DestinationBucketName: !Ref LoggingBucket
-              LogFilePrefix: "accessLogs/"
-    ReadPolicy:
-     Type: AWS::S3::BucketPolicy
-     Properties:
-        Bucket: !Ref S3Bucket
-        PolicyDocument:
-         Statement:
-         - Action: 's3:GetObject'
-           Effect: Allow
-           Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
-           Principal:
-             CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
-    CloudFrontOriginAccessIdentity:
-     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
-     Properties:
-        CloudFrontOriginAccessIdentityConfig:
-         Comment: !Ref S3Bucket
-    CFDistribution:
-        Type: AWS::CloudFront::Distribution
-        Properties:            
-          DistributionConfig:
-            ViewerCertificate:
-              CloudFrontDefaultCertificate: 'true'
-              MinimumProtocolVersion: !Ref MinimumTLSVersion
-            Logging:
-              Bucket: !GetAtt LogBucketName.DomainName
-              IncludeCookies : "true"
-              Prefix: "cloudfront/"
-            Enabled: 'true'
-            Origins:
-            - DomainName: !GetAtt S3Bucket.DomainName
-              Id: myS3Origin
-              S3OriginConfig:
-                OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
-            Enabled: 'true'
-            Comment: Some comment
-            DefaultRootObject: index.html
-            DefaultCacheBehavior:
-              TargetOriginId: myS3Origin
-              LambdaFunctionAssociations:
-                - 
-                  EventType: viewer-request
-                  LambdaFunctionARN: !Ref CloudFrontAuthFunction.Version
-              ForwardedValues:
-                    QueryString: 'false'
-                    Headers:
-                        - Origin
-                    Cookies:
-                        Forward: none
-              ViewerProtocolPolicy:
-                "allow-all"
-    CloudFrontAuthFunction:
-        Type: AWS::Serverless::Function
-        Properties:
-          CodeUri: src/js/
-          Role: !GetAtt LambdaEdgeFunctionRole.Arn
-          Runtime: nodejs14.x
-          Handler: auth.handle
-          Timeout: 5
-          AutoPublishAlias: LIVE
-    LambdaEdgeFunctionRole:
-      Type: AWS::IAM::Role
+          ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+        LoggingConfiguration:
+          DestinationBucketName: !Ref LoggingBucket
+          LogFilePrefix: "accessLogs/"
+  ReadPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+        - Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+          Principal:
+            CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref S3Bucket
+  CFDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+          MinimumProtocolVersion: !Ref MinimumTLSVersion
+        Logging:
+          Bucket: !GetAtt LoggingBucket.DomainName
+          IncludeCookies : "true"
+          Prefix: "cloudfront/"
+        Enabled: 'true'
+        Origins:
+        - DomainName: !GetAtt S3Bucket.DomainName
+          Id: myS3Origin
+          S3OriginConfig:
+            OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Comment: Some comment
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: myS3Origin
+          LambdaFunctionAssociations:
+          - EventType: viewer-request
+            LambdaFunctionARN: !Ref CloudFrontAuthFunction.Version
+          ForwardedValues:
+            QueryString: 'false'
+            Headers:
+            - Origin
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy:
+            "allow-all"
+  CloudFrontAuthFunction:
+      Type: AWS::Serverless::Function
       Properties:
-          Path: "/"
-          ManagedPolicyArns:
-              - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-          Policies:
-            - PolicyName: !Sub "Lambda-${AWS::StackName}"
-              PolicyDocument:
-                Version: "2012-10-17"
-                Statement:
-                  - Effect: Allow
-                    Action:
-                      - "secretsmanager:GetResourcePolicy"
-                      - "secretsmanager:GetSecretValue"
-                      - "secretsmanager:DescribeSecret"
-                      - "secretsmanager:ListSecretVersionIds"
-                    Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretKeyName}"
-          AssumeRolePolicyDocument:
+        CodeUri: src/js/
+        Role: !GetAtt LambdaEdgeFunctionRole.Arn
+        Runtime: nodejs14.x
+        Handler: auth.handle
+        Timeout: 5
+        AutoPublishAlias: LIVE
+  LambdaEdgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+        Path: "/"
+        ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        Policies:
+        - PolicyName: !Sub "Lambda-${AWS::StackName}"
+          PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              -
-                Sid: "AllowLambdaServiceToAssumeRole"
-                Effect: "Allow"
-                Action:
-                  - "sts:AssumeRole"
-                Principal:
-                  Service:
-                    - "lambda.amazonaws.com"
-                    - "edgelambda.amazonaws.com"
+            - Effect: Allow
+              Action:
+              - "secretsmanager:GetResourcePolicy"
+              - "secretsmanager:GetSecretValue"
+              - "secretsmanager:DescribeSecret"
+              - "secretsmanager:ListSecretVersionIds"
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretKeyName}"
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "AllowLambdaServiceToAssumeRole"
+              Effect: "Allow"
+              Action:
+              - "sts:AssumeRole"
+              Principal:
+                Service:
+                - "lambda.amazonaws.com"
+                - "edgelambda.amazonaws.com"
 Outputs:
-    CloudFrontAuthFunction:
-      Description: Lambda@Edge CloudFront Auth Function ARN
-      Value: !GetAtt CloudFrontAuthFunction.Arn
-    CloudFrontAuthFunctionVersion:
-      Description: Lambda@Edge CloudFront Auth Function ARN with Version
-      Value: !Ref CloudFrontAuthFunction.Version
+  CloudFrontAuthFunction:
+    Description: Lambda@Edge CloudFront Auth Function ARN
+    Value: !GetAtt CloudFrontAuthFunction.Arn
+  CloudFrontAuthFunctionVersion:
+    Description: Lambda@Edge CloudFront Auth Function ARN with Version
+    Value: !Ref CloudFrontAuthFunction.Version
