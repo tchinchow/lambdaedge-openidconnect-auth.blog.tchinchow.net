@@ -4,15 +4,19 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: SAM configuration for cloudfront-auth function
 Parameters:
-  BucketName:
+  OriginBucketName:
     Type: String
-    Description: The name of the Static Content S3 Bucket to Create
+    Description: The name of the Static Content S3 Bucket (will be created)
   LogBucketName:
     Type: String
-    Description: The name of the Log Content S3 Bucket already existing
-  SecretKeyName:
+    Description: The name of the Log Content S3 Bucket (will be created)
+  OidcSecretName:
     Type: String
-    Description: The name of the Secret in Secrets manager for the OIDC configuaration (e.g. okta-configuration-v4cw9Z)
+    Description: The name of the Secret in Secrets manager for the OIDC configuaration (must exist)
+  AlternateDomainName:
+    Type: String
+    Description: The alternate domain name
+    Default: AWS::NoValue
   MinimumTLSVersion:
     Type: String
     Description: The minimum version to use for CloudFront TLS
@@ -27,10 +31,10 @@ Resources:
         ServerSideEncryptionConfiguration:
         - ServerSideEncryptionByDefault:
             SSEAlgorithm: AES256
-  S3Bucket:
+  OriginBucket:
       Type: AWS::S3::Bucket
       Properties:
-        BucketName: !Ref BucketName
+        BucketName: !Ref OriginBucketName
         BucketEncryption:
           ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -41,20 +45,20 @@ Resources:
   ReadPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref S3Bucket
+      Bucket: !Ref OriginBucket
       PolicyDocument:
         Statement:
         - Action: 's3:GetObject'
           Effect: Allow
-          Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+          Resource: !Sub 'arn:aws:s3:::${OriginBucket}/*'
           Principal:
             CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
   CloudFrontOriginAccessIdentity:
     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
     Properties:
       CloudFrontOriginAccessIdentityConfig:
-        Comment: !Ref S3Bucket
-  CFDistribution:
+        Comment: !Ref OriginBucket
+  CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
@@ -67,12 +71,12 @@ Resources:
           Prefix: 'cloudfront/'
         Enabled: 'true'
         Origins:
-        - DomainName: !GetAtt S3Bucket.DomainName
+        - DomainName: !GetAtt OriginBucket.DomainName
           Id: myS3Origin
           S3OriginConfig:
             OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
-        Comment: Some comment
-        DefaultRootObject: index.html
+        Comment: 'OpenID Connect authentication and authorization function for ${}'
+        DefaultRootObject: 'index.html'
         DefaultCacheBehavior:
           TargetOriginId: myS3Origin
           LambdaFunctionAssociations:
@@ -88,6 +92,7 @@ Resources:
   CloudFrontAuthFunction:
       Type: AWS::Serverless::Function
       Properties:
+        FunctionName: !Sub 'cloudfront-auth-${AWS::StackName}'
         CodeUri: src/js/
         Role: !GetAtt LambdaEdgeFunctionRole.Arn
         Runtime: nodejs14.x
@@ -101,7 +106,7 @@ Resources:
         ManagedPolicyArns:
         - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
         Policies:
-        - PolicyName: !Sub "Lambda-${AWS::StackName}"
+        - PolicyName: !Sub 'lambda-auth-${AWS::StackName}'
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -111,7 +116,7 @@ Resources:
               - 'secretsmanager:GetSecretValue'
               - 'secretsmanager:DescribeSecret'
               - 'secretsmanager:ListSecretVersionIds'
-              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretKeyName}"
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${OidcSecretName}'
         AssumeRolePolicyDocument:
           Version: '2012-10-17'
           Statement:
@@ -123,6 +128,7 @@ Resources:
                 Service:
                 - 'lambda.amazonaws.com'
                 - 'edgelambda.amazonaws.com'
+        RoleName: !Sub 'lambda-edge-${AWS::StackName}'
 Outputs:
   CloudFrontAuthFunction:
     Description: Lambda@Edge CloudFront Auth Function ARN
