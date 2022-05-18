@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: SAM configuration for cloudfront-auth function
+Description: SAM configuration for cloudfront-oidc-auth function
 Parameters:
   OriginBucketName:
     Type: String

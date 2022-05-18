@@ -1,4 +1,0 @@
-# TODO: this is a relic of the original sample file that is now deprecated but that
-# remains to keep a trace/file in git.
-# the file is now replaced by `idp-secret-arn.txt` which is not stored in git
-# because you don't want to expose your secrets metadata to the world ;o)

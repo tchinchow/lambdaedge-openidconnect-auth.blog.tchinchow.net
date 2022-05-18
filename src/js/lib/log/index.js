@@ -1,3 +1,6 @@
+const AppDefaults = require('../appdefaults');
+let appDefaults = new AppDefaults();
+
 // LogLevel defines the log level and hierarchy of log levels
 // Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
@@ -11,7 +14,8 @@ let LogLevel;
 	level[(level.WARN = 3)] = 'WARN';
 	level[(level.INFO = 4)] = 'INFO';
 	level[(level.DEBUG = 5)] = 'DEBUG';
-	level[(level.ALL = 6)] = 'ALL';
+	level[(level.TRACE = 6)] = 'TRACE';
+	level[(level.ALL = 7)] = 'ALL';
 })(LogLevel || (LogLevel = {}));
 
 /**
@@ -30,7 +34,7 @@ let LogLevel;
  *
  * Notes:
  * You can specify the log level to log with the LOG_LEVEL environment variable.  Valid levels are
- *   off, fatal, error, warn, info, debug, all.  Default is info.
+ *   off, fatal, error, warn, info, debug, trace, all.  Default is info.
  * You can have the logs print human readable by setting the PRETTY_PRINT environment variable to
  *  true.  Default is false.
  *
@@ -42,8 +46,10 @@ let LogLevel;
  * it is skipped.
  */
 function log(event, context) {
-	const isPrettyPrint = (process.env.PRETTY_PRINT || 'false').toLowerCase() === 'true';
-	const logLevel = getLogLevel(process.env.LOG_LEVEL || 'INFO');
+	// const isPrettyPrint = (process.env.PRETTY_PRINT || 'false').toLowerCase() === 'true';
+	const isPrettyPrint = (appDefaults.isPrettyPrint || 'false').toLowerCase() === 'true';
+	// const logLevel = getLogLevel(process.env.LOG_LEVEL || 'INFO');
+	const logLevel = getLogLevel(appDefaults.logLevel || 'INFO');
 	const lambdaName = getLambdaName();
 	const properties = {};
 	const id = getId(event, context);
@@ -60,7 +66,7 @@ function log(event, context) {
 		};
 		const finalLevel = getLogLevel(possibleLevel || 'INFO');
 		const valueToWrite = {
-			instanceId: id,
+			RequestId: id,
 			level: LogLevel[finalLevel],
 			message: isNil(message) ? undefined : message,
 			attributes: isNil(attributes) ? {} : attributes,
@@ -79,6 +85,8 @@ function log(event, context) {
 			write(valueToWrite);
 		} else if (logLevel === LogLevel.DEBUG && finalLevel <= LogLevel.DEBUG) {
 			write(valueToWrite);
+		} else if (logLevel === LogLevel.TRACE && finalLevel <= LogLevel.TRACE) {
+			write(valueToWrite);
 		} else if (logLevel === LogLevel.ALL && finalLevel <= LogLevel.ALL) {
 			write(valueToWrite);
 		} else {
@@ -91,10 +99,12 @@ function log(event, context) {
 		// eslint-disable-next-line no-return-assign
 		addProp: (key, property) => (properties[key] = property),
 		rmProp: (key) => delete properties[key],
-		info: (message, attributes) => logMessage('INFO', message, attributes),
+		fatal: (message, attributes, error) => logMessage('FATAL', message, attributes, error),
+		error: (message, attributes, error) => logMessage('ERROR', message, attributes, error),
 		warn: (message, attributes, error) => logMessage('WARN', message, attributes, error),
+		info: (message, attributes) => logMessage('INFO', message, attributes),
 		debug: (message, attributes, error) => logMessage('DEBUG', message, attributes, error),
-		error: (message, attributes, error) => logMessage('ERROR', message, attributes, error)
+		trace: (message, attributes, error) => logMessage('TRACE', message, attributes, error)
 	};
 }
 
@@ -143,6 +153,10 @@ function getLogLevel(potentialLogLevel) {
 		}
 		case 'DEBUG': {
 			logLevel = LogLevel.DEBUG;
+			break;
+		}
+		case 'TRACE': {
+			logLevel = LogLevel.TRACE;
 			break;
 		}
 		default: {

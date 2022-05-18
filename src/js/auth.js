@@ -11,12 +11,18 @@ const QueryString = require('querystring');
 const fs = require('fs');
 const Log = require('./lib/log');
 
+// Using global variables should be used for caching data that is unlikely
+// to change across many invocations.
+// see https://aws.amazon.com/fr/blogs/networking-and-content-delivery/leveraging-external-data-in-lambdaedge/
 let discoveryDocument;
-let secretId;
+// let secretId;
 let jwks;
 let config;
 let deps;
 let log;
+
+const AppDefaults = require('./lib/appdefaults');
+let appDefaults = new AppDefaults();
 
 /**
  * handle is the starting point for the lambda.
@@ -32,10 +38,12 @@ let log;
  */
 exports.handle = async (event, ctx, cb, setDeps = setDependencies) => {
 	log = new Log(event, ctx);
-	// log.info('init lambda', { event: event });
+
+	log.debug('lambda starts (logger initialised)', { event: event });
+
 	deps = setDeps(deps);
 	try {
-		await prepareConfigGlobals();
+		await normalizeRequest(event);
 		return await authenticate(event);
 	} catch (err) {
 		log.error(err.message, { event: event }, err);
@@ -43,15 +51,64 @@ exports.handle = async (event, ctx, cb, setDeps = setDependencies) => {
 	}
 };
 
+/**
+ * Tells whether authentication is required for a given target URI and a given
+ * allowed patterns.
+ *
+ * The target URI is matched against a set of regular expressions defined in the
+ * allowed patterns. If any of them matches then the function instantly returns
+ * 'true' to indicate that the URI is allowed. Otherwise it returns 'false' to
+ * indicate that the URI is not part of the white list.
+ *
+ * @param {string} request is the request contained in the cloudfront event.
+ * @param {*} allowedURLPatterns an array of regular expressions that defined allowed URIs.
+ * @returns false if the request URI matches one of the regular expressions defined in
+ * the application defaults parameters, or true otherwise.
+ */
+function isURIAllowed(requestUri, allowedURLPatterns) {
+	log.debug('evaluating request uri against a regex array', {requestUri, allowedURLPatterns});
+	if (Array.isArray(allowedURLPatterns)) {
+		for (curRegExIdx in allowedURLPatterns) {
+			let curRegEx = allowedURLPatterns[curRegExIdx];
+			log.debug('matching', { curRegExIdx, curRegEx });
+			if (requestUri.match(curRegEx)) {
+				log.debug('match found', curRegEx);
+				return true;
+			}
+		};
+	} else {
+		log.error('the provided allowed regex array is not usable');
+	}
+	return false;
+}
+
+async function normalizeRequest(evt) {
+	const request = evt.Records[0].cf.request;
+
+	// Append 'index.html' to URI with trailing slash (folders)
+	let requestUri = request.uri;
+	log.debug('request URI normalization"', { evt } );
+
+	let normalizedRequestUri = requestUri.replace(/\/$/, '\/' + appDefaults.defaultDocument)
+	if (normalizedRequestUri !== request.uri) {
+		log.debug('appended default document to request uri', {normalizedRequestUri});
+		request.uri = normalizedRequestUri
+	}
+
+	requestUri = request.uri;
+}
+
 // setDepedencies is used to allow the overwriting of module-level dependencies for the purpose of
 // testing.  It's basically dependency injection.
 function setDependencies(dependencies) {
 	if (dependencies === undefined || dependencies === null) {
-		// log.info('setting up dependencies');
+		log.debug('setting up dependencies');
 		return {
 			axios: Axios,
 			sm: new AWS.SecretsManager({ apiVersion: '2017-10-17', region: 'us-east-1' })
 		};
+	} else {
+		log.debug('dependencies are already setup');
 	}
 	return dependencies;
 }
@@ -59,36 +116,62 @@ function setDependencies(dependencies) {
 // authenticate authenticates the user if they are a valid user, otherwise redirects accordingly.
 async function authenticate(evt) {
 	const { request } = evt.Records[0].cf;
+
+	if (isURIAllowed(request.uri, appDefaults.noAuthRegEx) === true) {
+		log.info('request URI (no authentication required): "' + request.uri + '"')
+		return request;
+	}
+
+	// Further processing will require
+	await prepareConfigGlobals();
+
 	const { headers, querystring } = request;
 	const queryString = QueryString.parse(querystring);
-	log.info(config.CALLBACK_PATH);
-	log.info(request.uri);
+	// log.info(config.CALLBACK_PATH);
+	log.info('request URI: "' + request.uri + '"');
 	if (request.uri.startsWith(config.CALLBACK_PATH)) {
-		// log.info('callback from OIDC provider received');
+		log.trace('callback from OIDC provider received', {queryString});
 		if (queryString.error) {
+			log.debug('callback from OIDC provider contains an error');
 			return handleInvalidQueryString(queryString);
 		}
-		log.info(queryString.code);
+
 		if (queryString.code === undefined || queryString.code === null) {
+			log.debug('callback from OIDC provider does not contain a code');
 			return getUnauthorizedPayload('No Code Found', '', '');
 		}
+
+		log.debug('generating response with new JWT');
 		return getNewJwtResponse({ evt, request, queryString, headers });
 	}
 	if ('cookie' in headers && 'TOKEN' in Cookie.parse(headers.cookie[0].value)) {
+		log.debug('request received with TOKEN cookie');
 		return getVerifyJwtResponse(request, headers);
-	} // log.info('redirecting to OIDC provider');
+	}
+
+	log.debug('non-callback request received without TOKEN: Redirecting to OIDC provider');
 	return getOidcRedirectPayload(request, headers);
 }
 
 // getVerifyJwtResponse gets the appropriate response for verified Jwt.
 async function getVerifyJwtResponse(request, headers) {
-	// log.info('request received with TOKEN cookie', { request, headers });
 	try {
-		// log.info('verifying JWT Response');
-		await verifyJwt(Cookie.parse(headers.cookie[0].value).TOKEN, config.PUBLIC_KEY.trim(), {
+		log.trace('verifying lambda JWT Response', { request, headers });
+		const decoded = await verifyJwt(request, Cookie.parse(headers.cookie[0].value).TOKEN, config.PUBLIC_KEY.trim(), {
 			algorithms: ['RS256']
-		}); // log.info('verified JWT Response');
-		return request;
+		});
+		log.trace('verified lambda JWT Response', {decoded});
+
+		// Validate request URI against the set of audience
+		if (isURIAllowed(request.uri, decoded.aud)) {
+			return request;
+		} else {
+			return getUnauthorizedPayload(
+				'Path not allowed',
+				`User ${decoded.email || 'user'} is not allowed to watch this resource`,
+				`Path "${request.uri}" is not part of the user's allowed folders`
+			);
+		}
 	} catch (err) {
 		switch (err.name) {
 			case 'TokenExpiredError':
@@ -107,21 +190,45 @@ async function getVerifyJwtResponse(request, headers) {
 // getNewJwtResponse returns the response required to redirect and get a new Jwt.
 async function getNewJwtResponse({ evt, request, queryString, headers }) {
 	try {
-		config.TOKEN_REQUEST.code = queryString.code; // log.info('details', { config, queryString });
-		const { idToken, decodedToken } = await getIdAndDecodedToken(); // log.info('searching for JWK from discovery document', { jwks, decodedToken, idToken });
+		config.TOKEN_REQUEST.code = queryString.code;
+		log.trace('code details', { config, queryString });
+
+		log.debug('requesting token from OIDC provider');
+		const { idToken, decodedToken } = await getIdAndDecodedToken();
+
+		log.trace('searching for JWK from discovery document', { jwks, decodedToken, idToken });
 		const rawPem = jwks.keys.filter((k) => k.kid === decodedToken.header.kid)[0];
 		if (rawPem === undefined) {
 			throw new Error('unable to find expected pem in jwks keys');
 		}
-		const pem = JwkToPem(rawPem); // log.info('verifying JWT', { rawPem, pem });
+		const pem = JwkToPem(rawPem);
+
+		log.trace('verifying JWT', { rawPem, pem });
 		try {
-			const decoded = await verifyJwt(idToken, pem, { algorithms: ['RS256'] }); // log.info('decoded Jwt', { decoded });
+			log.debug('verifying OIDC provider JWT Response');
+			const decoded = await verifyJwt(request, idToken, pem, { algorithms: ['RS256'] });
+			log.trace('verified OIDC provider JWT Response', {decoded});
 			if (
 				'cookie' in headers &&
 				'NONCE' in Cookie.parse(headers.cookie[0].value) &&
 				validateNonce(decoded.nonce, Cookie.parse(headers.cookie[0].value).NONCE)
 			) {
-				return getRedirectPayload({ evt, queryString, decodedToken, headers });
+				// Validate the redirection target URI against the set of user_folders.
+				// We could wait until the browser hits us again with the lambda JWT but
+				// performing this verification ASAP avoids unecessary traffic and can
+				// help reducing the costs.
+				if (isURIAllowed(queryString.state, decoded.user_folders)) {
+					// Redirect to the actual resource with a lambda JWT TOKEN cookie.
+					// This will trigger another request with the lambda TOKEN
+					// user_folders will then be verified from the lambda JWT TOKEN cookie
+					return getRedirectPayload({ evt, queryString, decodedToken, headers });
+				} else {
+					return getUnauthorizedPayload(
+						'Unknown JWT',
+						`User ${decoded.email || 'user'} is not permitted`,
+						`Path "${request.uri}" is not part of the user's allowed folders`
+					);
+				}
 			}
 			return getUnauthorizedPayload('Nonce Verification Failed', '', '');
 		} catch (err) {
@@ -158,16 +265,22 @@ async function getNewJwtResponse({ evt, request, queryString, headers }) {
 // getIdAndDecodedToken gets the id token and decoded version fo the token from the token
 // endpoint.
 async function getIdAndDecodedToken() {
-	const tokenRequest = QueryString.stringify(config.TOKEN_REQUEST); // log.info('requesting access token.', { discoveryDocument, tokenRequest, config });
-	const response = await deps.axios.post(discoveryDocument.token_endpoint, tokenRequest); // log.info('response', { response });
+	const tokenRequest = QueryString.stringify(config.TOKEN_REQUEST);
+
+	log.trace('requesting access token.', { discoveryDocument, tokenRequest, config });
+	const response = await deps.axios.post(discoveryDocument.token_endpoint, tokenRequest);
+	log.trace('response', { response });
+
 	const decodedToken = JsonWebToken.decode(response.data.id_token, {
 		complete: true
-	}); // log.info('decodedToken', { decodedToken });
+	});
+	log.trace('decodedToken', { decodedToken });
+
 	return { idToken: response.data.id_token, decodedToken };
 }
 
 // verifyJwt wraps the callback-based JsonWebToken.verify function in a promise.
-async function verifyJwt(token, pem, algorithms) {
+async function verifyJwt(request, token, pem, algorithms) {
 	return new Promise((resolve, reject) => {
 		JsonWebToken.verify(token, pem, algorithms, (err, decoded) => {
 			if (err) {
@@ -218,6 +331,7 @@ function handleInvalidQueryString(queryString) {
 
 // getNonceAndHash gets a nonce and hash.
 function getNonceAndHash() {
+	log.debug('generating nonce and digest')
 	const nonce = Crypto.randomBytes(32).toString('hex');
 	const hash = Crypto.createHmac('sha256', nonce).digest('hex');
 	return { nonce, hash };
@@ -225,38 +339,35 @@ function getNonceAndHash() {
 
 // validateNonce validates a nonce.
 function validateNonce(nonce, hash) {
+	log.trace('validating nonce', {nonce, hash})
 	const other = Crypto.createHmac('sha256', nonce).digest('hex');
 	return other === hash;
-}
-
-// fetchConfigFromSecretsManager pulls the specified configuration from SecretsManager
-async function fetchConfigFromSecretsManager() {
-	// Get Secrets Manager Config Key from File since we cannot use environment variables.
-	if (secretId == undefined) {
-		try {
-			secretId = fs.readFileSync('./idp-secret-arn.txt', 'utf-8');
-			secretId = secretId.replace(/(\r\n|\n|\r)/gm, '');
-		} catch (err) {
-			log.error(err);
-		}
-	} // Attempted to read from CloudFront Custom Header due to Environment variable limitations // Must be an Origin Request, but we need this to be a Viewer Request.
-	const secret = await deps.sm.getSecretValue({ SecretId: secretId }).promise(); // eslint-disable-next-line no-buffer-constructor
-	const buff = new Buffer(JSON.parse(secret.SecretString).config, 'base64');
-	const decodedval = JSON.parse(buff.toString('utf-8'));
-	return decodedval;
 }
 
 // setConfig sets the config object to the value from SecretsManager if it wasn't already set.
 async function setConfig() {
 	if (config === undefined) {
-		config = await fetchConfigFromSecretsManager();
+		let secretId = appDefaults.oidcSecret;
+		const secret = await deps.sm.getSecretValue({ SecretId: secretId }).promise();
+		const buff = new Buffer.from(JSON.parse(secret.SecretString).config, 'base64');
+		const decodedval = JSON.parse(buff.toString('utf-8'));
+		config = decodedval;
+
+		log.trace('OIDC provider config not cached and therefore retrieved from SecretsManager...', {secretId, config});
+	} else {
+		log.trace('re-using OIDC provider config from cached value !', {config});
 	}
 }
 
 // setDiscoveryDocument sets the discoveryDocument object if it wasn't already set.
 async function setDiscoveryDocument() {
 	if (discoveryDocument === undefined) {
-		discoveryDocument = (await deps.axios.get(config.DISCOVERY_DOCUMENT)).data;
+		let discoveryDocumentURI = config.DISCOVERY_DOCUMENT;
+		discoveryDocument = (await deps.axios.get(discoveryDocumentURI)).data;
+
+		log.trace('OIDC discovery document was not cached and therefore retrieved from OIDC provider', {discoveryDocumentURI, discoveryDocument});
+	} else {
+		log.trace('re-using OIDC discovery document from cached value !', {discoveryDocument});
 	}
 }
 
@@ -269,12 +380,19 @@ async function setJwks() {
 		) {
 			throw new Error('Unable to find JWK in discovery document');
 		}
-		jwks = (await deps.axios.get(discoveryDocument.jwks_uri)).data;
+
+		let jwksURI = discoveryDocument.jwks_uri;
+		jwks = (await deps.axios.get(jwksURI)).data;
+
+		log.trace('JWKS data not cached and therfore retrieved from OIDC provider...', {jwksURI, jwks});
+	} else {
+		log.trace('re-using JWKS data from cached value !', {jwks});
 	}
 }
 
 // prepareConfigGlobals sets up all the lambda globals if they are not already set.
 async function prepareConfigGlobals() {
+	log.debug('preparing global configuration variables...');
 	await setConfig();
 	await setDiscoveryDocument();
 	await setJwks();
@@ -290,7 +408,7 @@ function getRedirectPayload({ evt, queryString, decodedToken, headers }) {
 			location: [
 				{
 					key: 'Location',
-					value:
+					value:// config.AUTH_REQUEST.redirect_uri + queryString.state
 						evt.Records[0].cf.config.test !== undefined
 							? config.AUTH_REQUEST.redirect_uri + queryString.state
 							: queryString.state
@@ -305,7 +423,8 @@ function getRedirectPayload({ evt, queryString, decodedToken, headers }) {
 							audience: headers.host[0].value,
 							subject: decodedToken.payload.email,
 							expiresIn: config.SESSION_DURATION,
-							algorithm: 'RS256'
+							algorithm: 'RS256',
+							audience: decodedToken.payload.user_folders
 						}),
 						{
 							path: '/',
@@ -322,7 +441,8 @@ function getRedirectPayload({ evt, queryString, decodedToken, headers }) {
 				}
 			]
 		}
-	}; // log.info('setting cookie and redirecting', { response });
+	};
+	log.trace('setting cookie and redirecting', { response });
 	return response;
 }
 
@@ -332,7 +452,7 @@ function getOidcRedirectPayload(request) {
 	config.AUTH_REQUEST.nonce = nonce;
 	config.AUTH_REQUEST.state = request.uri; // Redirect to Authorization Server
 
-	return {
+	const response = {
 		status: '302',
 		statusDescription: 'Found',
 		body: 'Redirecting to OIDC provider',
@@ -363,6 +483,8 @@ function getOidcRedirectPayload(request) {
 			]
 		}
 	};
+	log.trace('redirecting to OIDC provider', { response });
+	return response;
 }
 
 // getUnauthorizedPayload generates an appropriate unauthorized response.
